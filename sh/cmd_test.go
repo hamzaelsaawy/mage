@@ -2,8 +2,10 @@ package sh
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestOutCmd(t *testing.T) {
@@ -34,17 +36,32 @@ func TestExitCode(t *testing.T) {
 
 func TestEnv(t *testing.T) {
 	env := "SOME_REALLY_LONG_MAGEFILE_SPECIFIC_THING"
-	out := &bytes.Buffer{}
-	ran, err := Exec(map[string]string{env: "foobar"}, out, nil, os.Args[0], "-printVar", env)
-	if err != nil {
-		t.Fatalf("unexpected error from runner: %#v", err)
-	}
-	if !ran {
-		t.Errorf("expected ran to be true but was false.")
-	}
-	if out.String() != "foobar\n" {
-		t.Errorf("expected foobar, got %q", out)
-	}
+	envVal := "foobar"
+
+	t.Run("Exec", func(t *testing.T) {
+		out := &bytes.Buffer{}
+		ran, err := Exec(map[string]string{env: envVal}, out, nil, os.Args[0], "-printVar", env)
+		if err != nil {
+			t.Fatalf("unexpected error from runner: %#v", err)
+		}
+		if !ran {
+			t.Errorf("expected ran to be true but was false.")
+		}
+		if out.String() != envVal+"\n" {
+			t.Errorf("expected %q, got %q", envVal, out)
+		}
+	})
+
+	t.Run("Setenv", func(t *testing.T) {
+		t.Setenv(env, envVal)
+		s, err := Output(os.Args[0], "-printVar", env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s != envVal {
+			t.Fatalf(`Expected %q but got %q`, envVal, s)
+		}
+	})
 }
 
 func TestNotRun(t *testing.T) {
@@ -68,5 +85,55 @@ func TestAutoExpand(t *testing.T) {
 	if s != "baz" {
 		t.Fatalf(`Expected "baz" but got %q`, s)
 	}
+}
 
+func TestCleanEnv(t *testing.T) {
+	t.Setenv("FOO", "BAR")
+	s, err := Command{
+		Cmd:      os.Args[0],
+		Args:     []string{"-printVar", "FOO"},
+		CleanEnv: true,
+	}.Output(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "" {
+		t.Fatalf(`Expected "" but got %q`, s)
+	}
+}
+
+func TestContextTimeout(t *testing.T) {
+	d := 1 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	start := time.Now()
+	_, err := Command{
+		Cmd:  os.Args[0],
+		Args: []string{"-sleep", (2 * d).String()},
+	}.Exec(ctx)
+	dd := time.Since(start)
+	if err == nil {
+		t.Fatalf("Command should have errored")
+	}
+	if dd < d {
+		t.Fatalf("Duration too short: expected %v, got %v", d, dd)
+	}
+	// allow some wiggle room, too account for Exec overheard
+	if dd-d > 50*time.Millisecond {
+		t.Fatalf("Expected duration %v, got %v", d, dd)
+	}
+}
+
+func TestWorkingDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	s, err := Command{
+		Cmd:        "pwd",
+		WorkingDir: tmp,
+	}.Output(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != tmp {
+		t.Fatalf(`Expected %q but got %q`, tmp, s)
+	}
 }
